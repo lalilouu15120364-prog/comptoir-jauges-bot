@@ -1,11 +1,30 @@
 import os
 import json
-import asyncio
-from typing import Dict, Any
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import Dict, Optional
 
 import discord
 from discord.ext import commands
 from discord import app_commands
+
+# =========================
+# Mini serveur HTTP pour Render (Web Service gratuit)
+# =========================
+
+class SimpleHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+def start_http_server():
+    """Lance un mini serveur HTTP en arrière-plan pour faire plaisir a Render."""
+    port = int(os.environ.get("PORT", "10000"))
+    server = HTTPServer(("0.0.0.0", port), SimpleHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
 
 # =========================
 # Configuration de base
@@ -13,7 +32,9 @@ from discord import app_commands
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-# Tes IDs de salons Discord (remplis)
+GAUGES_FILE = "gauges.json"
+
+# IDs de salons (les tiens)
 CHANNEL_IDS = {
     "global_panel": 1444120310142996511,     # #jauges-comptoir
 
@@ -25,9 +46,7 @@ CHANNEL_IDS = {
     "grand_port": 1443596212690354186,       # #🚢-grand-port
 }
 
-GAUGES_FILE = "gauges.json"
-
-# Définition des quartiers et jauges
+# Quartiers
 QUARTERS = {
     "mechumide": {"label": "Méchumide", "emoji": "🏠"},
     "pointe_du_crochet": {"label": "Pointe du Crochet", "emoji": "⚓"},
@@ -37,6 +56,7 @@ QUARTERS = {
     "grand_port": {"label": "Grand Port", "emoji": "🚢"},
 }
 
+# Types de jauges
 GAUGE_KEYS = {
     "humeur": "Humeur",
     "tension": "Tension",
@@ -46,19 +66,22 @@ GAUGE_KEYS = {
 
 DEFAULT_GAUGE_VALUE = 0
 
+
 # =========================
-# Utilitaires jauges
+# Utilitaires de jauges
 # =========================
 
 def render_bar(value: int, max_value: int = 5) -> str:
     value = max(0, min(max_value, int(value)))
     return "■" * value + "□" * (max_value - value)
 
+
 def default_gauges() -> Dict[str, Dict[str, int]]:
     return {
         q: {k: DEFAULT_GAUGE_VALUE for k in GAUGE_KEYS.keys()}
         for q in QUARTERS.keys()
     }
+
 
 def load_gauges() -> Dict[str, Dict[str, int]]:
     if not os.path.exists(GAUGES_FILE):
@@ -69,7 +92,7 @@ def load_gauges() -> Dict[str, Dict[str, int]]:
     try:
         with open(GAUGES_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-    except:
+    except Exception:
         data = default_gauges()
         save_gauges(data)
         return data
@@ -83,32 +106,37 @@ def load_gauges() -> Dict[str, Dict[str, int]]:
     save_gauges(data)
     return data
 
+
 def save_gauges(data: Dict[str, Dict[str, int]]) -> None:
     with open(GAUGES_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
 
 # =========================
 # Bot principal
 # =========================
 
-intents = discord.Intents.default()
+intents = discord.Intents.default()  # pas de message_content
 
 class ComptoirBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents)
-        self.gauges = load_gauges()
+        self.gauges: Dict[str, Dict[str, int]] = load_gauges()
 
-        self.global_panel_message_id = None
-        self.quarter_panel_message_ids = {k: None for k in QUARTERS.keys()}
+        self.global_panel_message_id: Optional[int] = None
+        self.quarter_panel_message_ids: Dict[str, Optional[int]] = {
+            k: None for k in QUARTERS.keys()
+        }
 
     async def setup_hook(self):
         self.tree.add_command(comptoir)
 
     async def on_ready(self):
         print(f"[OK] Connecté en tant que {self.user}")
+        print("Initialisation des panneaux...")
         await self.ensure_panels_exist()
         await self.tree.sync()
-        print("[OK] Commandes synchronisées.")
+        print("[OK] Panneaux prêts et commandes synchronisées.")
 
     # =========================
     # Panneaux
@@ -119,13 +147,14 @@ class ComptoirBot(commands.Bot):
         await self.ensure_quarter_panels()
 
     async def ensure_global_panel(self):
-        channel = self.get_channel(CHANNEL_IDS["global_panel"])
+        channel_id = CHANNEL_IDS["global_panel"]
+        channel = self.get_channel(channel_id)
+
         if not isinstance(channel, discord.TextChannel):
             print("[WARN] Salon global introuvable.")
             return
 
         marker = "**Panneau général du Comptoir**"
-
         async for msg in channel.history(limit=50):
             if msg.author.id == self.user.id and msg.content.startswith(marker):
                 self.global_panel_message_id = msg.id
@@ -139,34 +168,36 @@ class ComptoirBot(commands.Bot):
 
     async def ensure_quarter_panels(self):
         for q_key in QUARTERS.keys():
-            channel = self.get_channel(CHANNEL_IDS[q_key])
+            channel_id = CHANNEL_IDS[q_key]
+            channel = self.get_channel(channel_id)
+
             if not isinstance(channel, discord.TextChannel):
                 print(f"[WARN] Salon introuvable pour {q_key}")
                 continue
 
             header = f"**{QUARTERS[q_key]['emoji']} {QUARTERS[q_key]['label']} — État du quartier**"
+            found_id: Optional[int] = None
 
-            msg_id = None
             async for msg in channel.history(limit=50):
                 if msg.author.id == self.user.id and msg.content.startswith(header):
-                    msg_id = msg.id
+                    found_id = msg.id
                     break
 
-            if msg_id is None:
+            if found_id is None:
                 m = await channel.send(self.build_quarter_panel_content(q_key))
                 self.quarter_panel_message_ids[q_key] = m.id
             else:
-                self.quarter_panel_message_ids[q_key] = msg_id
+                self.quarter_panel_message_ids[q_key] = found_id
                 await self.update_quarter_panel(q_key)
 
     # =========================
-    # Construction contenu
+    # Construction du contenu
     # =========================
 
     def build_global_panel_content(self) -> str:
         lines = [
             "**Panneau général du Comptoir**",
-            "_État global des quartiers de Boralus._\n"
+            "_État global des quartiers de Boralus._\n",
         ]
 
         for q_key, q in QUARTERS.items():
@@ -192,12 +223,18 @@ class ComptoirBot(commands.Bot):
         return "\n".join(lines)
 
     # =========================
-    # Mise à jour panneaux
+    # Mise à jour des panneaux
     # =========================
 
     async def update_global_panel(self):
-        channel = self.get_channel(CHANNEL_IDS["global_panel"])
-        if not channel or not self.global_panel_message_id:
+        channel_id = CHANNEL_IDS["global_panel"]
+        channel = self.get_channel(channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            print("[WARN] Impossible de mettre à jour le panneau global.")
+            return
+
+        if self.global_panel_message_id is None:
+            await self.ensure_global_panel()
             return
 
         try:
@@ -208,18 +245,29 @@ class ComptoirBot(commands.Bot):
             self.global_panel_message_id = m.id
 
     async def update_quarter_panel(self, q_key: str):
-        channel = self.get_channel(CHANNEL_IDS[q_key])
-        msg_id = self.quarter_panel_message_ids.get(q_key)
+        channel_id = CHANNEL_IDS[q_key]
+        channel = self.get_channel(channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            print(f"[WARN] Impossible de mettre à jour le panneau pour {q_key}.")
+            return
 
-        if not channel:
+        msg_id = self.quarter_panel_message_ids.get(q_key)
+        if msg_id is None:
+            m = await channel.send(self.build_quarter_panel_content(q_key))
+            self.quarter_panel_message_ids[q_key] = m.id
             return
 
         try:
             msg = await channel.fetch_message(msg_id)
             await msg.edit(content=self.build_quarter_panel_content(q_key))
-        except:
+        except discord.NotFound:
             m = await channel.send(self.build_quarter_panel_content(q_key))
             self.quarter_panel_message_ids[q_key] = m.id
+
+
+# =========================
+# Instanciation du bot
+# =========================
 
 bot = ComptoirBot()
 
@@ -233,8 +281,8 @@ QUARTIER_CHOICES = [
 ]
 
 JAUGE_CHOICES = [
-    app_commands.Choice(name=l, value=k)
-    for k, l in GAUGE_KEYS.items()
+    app_commands.Choice(name=label, value=key)
+    for key, label in GAUGE_KEYS.items()
 ]
 
 @bot.tree.command(name="comptoir", description="Met à jour une jauge d'un quartier.")
@@ -242,12 +290,20 @@ JAUGE_CHOICES = [
 @app_commands.describe(
     quartier="Choisis un quartier",
     jauge="Choisis une jauge",
-    valeur="Valeur (0 à 5)"
+    valeur="Valeur (0 à 5)",
 )
-async def comptoir(interaction: discord.Interaction,
-                   quartier: app_commands.Choice[str],
-                   jauge: app_commands.Choice[str],
-                   valeur: app_commands.Range[int, 0, 5]):
+async def comptoir(
+    interaction: discord.Interaction,
+    quartier: app_commands.Choice[str],
+    jauge: app_commands.Choice[str],
+    valeur: app_commands.Range[int, 0, 5],
+):
+    if interaction.guild is None:
+        await interaction.response.send_message(
+            "Cette commande ne peut être utilisée que sur le serveur.",
+            ephemeral=True,
+        )
+        return
 
     bot.gauges = load_gauges()
     bot.gauges[quartier.value][jauge.value] = int(valeur)
@@ -256,18 +312,31 @@ async def comptoir(interaction: discord.Interaction,
     await bot.update_global_panel()
     await bot.update_quarter_panel(quartier.value)
 
+    q_label = QUARTERS[quartier.value]["label"]
+    g_label = GAUGE_KEYS[jauge.value]
+    bar = render_bar(int(valeur))
+
     await interaction.response.send_message(
-        f"✨ Jauge mise à jour ! Quartier **{QUARTERS[quartier.value]['label']}** → "
-        f"**{GAUGE_KEYS[jauge.value]}** : `{render_bar(valeur)} {valeur}/5`",
-        ephemeral=True
+        f"✨ Jauge mise à jour ! Quartier **{q_label}** → **{g_label}** : `{bar} {valeur}/5`",
+        ephemeral=True,
     )
 
+
 # =========================
-# Lancer le bot
+# Lancement du bot
 # =========================
 
-if __name__ == "__main__":
+def main():
     if not TOKEN:
-        print("ERREUR : la variable DISCORD_TOKEN est manquante sur Render.")
-    else:
-        bot.run(TOKEN)
+        print("ERREUR : la variable DISCORD_TOKEN est manquante.")
+        return
+
+    # On lance le mini serveur HTTP pour Render (Web Service)
+    start_http_server()
+
+    # Puis on lance le bot Discord
+    bot.run(TOKEN)
+
+
+if __name__ == "__main__":
+    main()
