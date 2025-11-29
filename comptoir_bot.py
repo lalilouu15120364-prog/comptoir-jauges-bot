@@ -129,7 +129,10 @@ class ComptoirBot(commands.Bot):
         }
 
     async def setup_hook(self):
-        self.tree.add_command(comptoir)
+    # La commande /comptoir est déjà enregistrée par le décorateur.
+    # On ne fait rien ici.
+    pass
+
 
     async def on_ready(self):
         print(f"[OK] Connecté en tant que {self.user}")
@@ -340,3 +343,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
