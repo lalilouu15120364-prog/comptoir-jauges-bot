@@ -11,7 +11,6 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 if TOKEN is None:
     raise RuntimeError("❌ Erreur : La variable d'environnement DISCORD_TOKEN n'est pas définie.")
 
-
 # ----------------------------------------
 # 🤖 INTENTS
 # ----------------------------------------
@@ -22,63 +21,62 @@ intents.guilds = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
-
 # ----------------------------------------
-# 🎚️ Les jauges du Comptoir (détaillées)
+# 📍 Configuration des quartiers
 # ----------------------------------------
-# Pour chaque quartier : 4 jauges + un texte d'événement
-DEFAULT_EVENT = "Aucun événement enregistré pour le moment."
-
-districts = {
-    "Méhumide": {
-        "humeur": 0,
-        "tension": 0,
-        "activite": 0,
-        "menaces": 0,
-        "evenement": DEFAULT_EVENT,
+# id interne : {
+#   "name": nom pour l'affichage,
+#   "channel": nom du salon dédié
+# }
+DISTRICTS = {
+    "mechumide": {
+        "name": "Méchumide",
+        "channel": "méchumide",
     },
-    "Pointe du Crochet": {
-        "humeur": 0,
-        "tension": 0,
-        "activite": 0,
-        "menaces": 0,
-        "evenement": DEFAULT_EVENT,
+    "pointe_du_crochet": {
+        "name": "Pointe du Crochet",
+        "channel": "pointe-du-crochet",
     },
-    "Voie des Marins": {
-        "humeur": 0,
-        "tension": 0,
-        "activite": 0,
-        "menaces": 0,
-        "evenement": DEFAULT_EVENT,
+    "voie_des_marins": {
+        "name": "Voie du marin",
+        "channel": "voie-du-marin",
     },
-    "Haut quartier": {
-        "humeur": 0,
-        "tension": 0,
-        "activite": 0,
-        "menaces": 0,
-        "evenement": DEFAULT_EVENT,
+    "haut_quartier": {
+        "name": "Haut quartier",
+        "channel": "haut-quartier",
     },
-    "Marché des Alizées": {
-        "humeur": 0,
-        "tension": 0,
-        "activite": 0,
-        "menaces": 0,
-        "evenement": DEFAULT_EVENT,
+    "marche_des_alizees": {
+        "name": "Marché des Alizées",
+        "channel": "alizés",
     },
-    "Port principal": {
-        "humeur": 0,
-        "tension": 0,
-        "activite": 0,
-        "menaces": 0,
-        "evenement": DEFAULT_EVENT,
+    "port_principal": {
+        "name": "Port principal",
+        "channel": "grand-port",
     },
 }
 
+GAUGES = ["humeur", "tension", "activité", "menaces"]
 MAX_JAUGE = 5
 
+# ----------------------------------------
+# 🧠 Données en mémoire
+# districts_state[district_id]["gauges"][gauge] = valeur 0–5
+# districts_state[district_id]["event"] = texte ou None
+# ----------------------------------------
+districts_state = {}
+for district_id in DISTRICTS.keys():
+    districts_state[district_id] = {
+        "gauges": {g: 0 for g in GAUGES},
+        "event": None,
+    }
+
+# id du panneau global (un seul message)
+global_panel_message_id: int | None = None
+# id des panneaux individuels : {district_id: message_id}
+district_panel_message_ids: dict[str, int] = {}
 
 # ----------------------------------------
-# 🔧 Fonction utilitaire pour afficher une jauge
+# 🔧 Rendu des jauges
 # ----------------------------------------
 def render_gauge(value: int) -> str:
     value = max(0, min(MAX_JAUGE, value))
@@ -87,73 +85,141 @@ def render_gauge(value: int) -> str:
     return f"{filled}{empty} {value}/{MAX_JAUGE}"
 
 
-# ----------------------------------------
-# 🟩 PANNEAU GLOBAL (tableau complet dans un embed)
-# ----------------------------------------
-global_panel_message_id = None   # rempli automatiquement si panneau créé
-
-
-async def update_global_panel(channel: discord.TextChannel):
-    """Met à jour le panneau global détaillé dans un message unique."""
-    global global_panel_message_id
-
-    lines = []
-
-    for name, data in districts.items():
-        lines.append(f"__**{name}**__")
-        lines.append(f"Humeur : {render_gauge(data['humeur'])}")
-        lines.append(f"Tension : {render_gauge(data['tension'])}")
-        lines.append(f"Activité : {render_gauge(data['activite'])}")
-        lines.append(f"Menaces : {render_gauge(data['menaces'])}")
-        lines.append("")  # ligne vide
-        lines.append("Dernier événement :")
-        lines.append(data["evenement"])
-        lines.append("")  # séparation entre quartiers
-
-    description = "\n".join(lines)
-
+def make_global_embed() -> discord.Embed:
     embed = discord.Embed(
-        title="État détaillé des quartiers de Boralus",
-        description=description,
-        color=discord.Color.gold(),
+        title="État général de Boralus",
+        description="Résumé des quartiers du Comptoir.",
+        colour=discord.Colour.gold(),
     )
 
+    for district_id, cfg in DISTRICTS.items():
+        state = districts_state[district_id]
+        lines = []
+        for gauge in GAUGES:
+            value = state["gauges"][gauge]
+            lines.append(f"**{gauge.capitalize()}** : {render_gauge(value)}")
+
+        event_text = state["event"] or "Aucun événement enregistré pour le moment."
+        lines.append(f"\n**Dernier événement :**\n{event_text}")
+
+        embed.add_field(
+            name=cfg["name"],
+            value="\n".join(lines),
+            inline=False,
+        )
+
+    embed.set_footer(text="Utilisez /comptoir pour mettre à jour les jauges.")
+    return embed
+
+
+def make_district_embed(district_id: str) -> discord.Embed:
+    cfg = DISTRICTS[district_id]
+    state = districts_state[district_id]
+
+    embed = discord.Embed(
+        title=f"Quartier : {cfg['name']}",
+        colour=discord.Colour.blue(),
+    )
+
+    for gauge in GAUGES:
+        value = state["gauges"][gauge]
+        embed.add_field(
+            name=gauge.capitalize(),
+            value=render_gauge(value),
+            inline=True,
+        )
+
+    event_text = state["event"] or "Aucun événement enregistré pour le moment."
+    embed.add_field(
+        name="Dernier événement",
+        value=event_text,
+        inline=False,
+    )
+
+    return embed
+
+# ----------------------------------------
+# 🟩 Mise à jour du panneau global
+# ----------------------------------------
+async def update_global_panel(guild: discord.Guild):
+    """
+    Met à jour (ou crée) le panneau global dans le salon #jauges-comptoir.
+    """
+    global global_panel_message_id
+
+    panel_channel = discord.utils.get(guild.channels, name="jauges-comptoir")
+    if panel_channel is None or not isinstance(panel_channel, discord.TextChannel):
+        return  # pas de salon, on ne fait rien
+
+    embed = make_global_embed()
+
+    # Premier affichage
     if global_panel_message_id is None:
-        msg = await channel.send(embed=embed)
+        msg = await panel_channel.send(embed=embed)
         global_panel_message_id = msg.id
     else:
         try:
-            msg = await channel.fetch_message(global_panel_message_id)
+            msg = await panel_channel.fetch_message(global_panel_message_id)
+            await msg.edit(embed=embed)
+        except discord.NotFound:
+            # le message a été supprimé → on en recrée un
+            msg = await panel_channel.send(embed=embed)
+            global_panel_message_id = msg.id
+
+# ----------------------------------------
+# 🟥 Mise à jour d'un panneau de quartier
+# ----------------------------------------
+async def update_district_panel(guild: discord.Guild, district_id: str):
+    """
+    Met à jour (ou crée) le panneau individuel dans le salon du quartier.
+    """
+    cfg = DISTRICTS[district_id]
+    channel = discord.utils.get(guild.channels, name=cfg["channel"])
+    if channel is None or not isinstance(channel, discord.TextChannel):
+        return
+
+    embed = make_district_embed(district_id)
+
+    msg_id = district_panel_message_ids.get(district_id)
+    if msg_id is None:
+        msg = await channel.send(embed=embed)
+        district_panel_message_ids[district_id] = msg.id
+    else:
+        try:
+            msg = await channel.fetch_message(msg_id)
             await msg.edit(embed=embed)
         except discord.NotFound:
             msg = await channel.send(embed=embed)
-            global_panel_message_id = msg.id
-
+            district_panel_message_ids[district_id] = msg.id
 
 # ----------------------------------------
 # 📌 Slash Command : /comptoir
 # ----------------------------------------
-@tree.command(name="comptoir", description="Met à jour les jauges détaillées d'un quartier.")
-@app_commands.describe(
-    quartier="Choisissez le quartier à modifier.",
-    jauge="Choisissez la jauge à mettre à jour.",
-    valeur="Valeur de la jauge (0 à 5).",
-    evenement="(Optionnel) Dernier événement à afficher pour ce quartier."
-)
-@app_commands.choices(quartier=[
-    app_commands.Choice(name="Méhumide", value="Méhumide"),
-    app_commands.Choice(name="Pointe du Crochet", value="Pointe du Crochet"),
-    app_commands.Choice(name="Voie des Marins", value="Voie des Marins"),
-    app_commands.Choice(name="Haut quartier", value="Haut quartier"),
-    app_commands.Choice(name="Marché des Alizées", value="Marché des Alizées"),
-    app_commands.Choice(name="Port principal", value="Port principal"),
-])
-@app_commands.choices(jauge=[
+district_choices = [
+    app_commands.Choice(name="Méchumide", value="mechumide"),
+    app_commands.Choice(name="Pointe du Crochet", value="pointe_du_crochet"),
+    app_commands.Choice(name="Voie des Marins", value="voie_des_marins"),
+    app_commands.Choice(name="Haut quartier", value="haut_quartier"),
+    app_commands.Choice(name="Marché des Alizées", value="marche_des_alizees"),
+    app_commands.Choice(name="Port principal", value="port_principal"),
+]
+
+gauge_choices = [
     app_commands.Choice(name="Humeur", value="humeur"),
     app_commands.Choice(name="Tension", value="tension"),
-    app_commands.Choice(name="Activité", value="activite"),
+    app_commands.Choice(name="Activité", value="activité"),
     app_commands.Choice(name="Menaces", value="menaces"),
-])
+]
+
+
+@tree.command(name="comptoir", description="Met à jour les jauges des quartiers.")
+@app_commands.describe(
+    quartier="Choisissez le quartier à modifier.",
+    jauge="Choisissez la jauge à modifier.",
+    valeur="Valeur de la jauge (0 à 5).",
+    evenement="Dernier événement marquant (optionnel).",
+)
+@app_commands.choices(quartier=district_choices, jauge=gauge_choices)
 async def comptoir(
     interaction: discord.Interaction,
     quartier: app_commands.Choice[str],
@@ -161,28 +227,35 @@ async def comptoir(
     valeur: int,
     evenement: str | None = None,
 ):
+    # Validation de la valeur
     if not 0 <= valeur <= MAX_JAUGE:
-        await interaction.response.send_message("❌ La valeur doit être entre 0 et 5.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ La valeur doit être entre 0 et 5.", ephemeral=True
+        )
         return
 
-    data = districts[quartier.value]
-    data[jauge.value] = valeur
+    district_id = quartier.value
+    gauge_key = jauge.value
 
+    # Mise à jour des données
+    districts_state[district_id]["gauges"][gauge_key] = valeur
     if evenement:
-        data["evenement"] = evenement
+        districts_state[district_id]["event"] = evenement
 
-    # Confirmation côté utilisateur
+    cfg = DISTRICTS[district_id]
+    gauge_label = gauge_key.capitalize()
+
+    # Réponse à l'utilisateur
     await interaction.response.send_message(
         f"✨ **Jauge mise à jour !**\n"
-        f"{quartier.value} · **{jauge.name}** → {render_gauge(valeur)}",
+        f"Quartier **{cfg['name']}** – {gauge_label} → {render_gauge(valeur)}",
         ephemeral=True,
     )
 
-    # mise à jour du panneau global si un salon a été défini
-    panel_channel = discord.utils.get(interaction.guild.channels, name="jauges-comptoir")
-    if panel_channel:
-        await update_global_panel(panel_channel)
-
+    # Mise à jour des panneaux (global + individuel)
+    if interaction.guild is not None:
+        await update_global_panel(interaction.guild)
+        await update_district_panel(interaction.guild, district_id)
 
 # ----------------------------------------
 # 🔄 Mise en ligne du bot
@@ -195,7 +268,6 @@ async def on_ready():
         print(f"Slash commands synchronisées : {len(synced)}")
     except Exception as e:
         print("Erreur de sync :", e)
-
 
 # ----------------------------------------
 # ▶️ Launch
