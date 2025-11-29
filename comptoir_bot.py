@@ -127,13 +127,6 @@ class ComptoirBot(commands.Bot):
         self.quarter_panel_message_ids: Dict[str, Optional[int]] = {
             k: None for k in QUARTERS.keys()
         }
-
-    async def setup_hook(self):
-    # La commande /comptoir est déjà enregistrée par le décorateur.
-    # On ne fait rien ici.
-    pass
-
-
     async def on_ready(self):
         print(f"[OK] Connecté en tant que {self.user}")
         print("Initialisation des panneaux...")
@@ -343,4 +336,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
